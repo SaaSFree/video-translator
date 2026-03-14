@@ -12,6 +12,11 @@
 6. 全局时序对齐
 7. 生成 target 音轨与 `dubbed.v1.mp4`
 
+其中 `target` 侧当前已经进入 V2 的第一阶段：
+
+- 已落地：边界分类、全局停顿预算分配、统一语速放宽
+- 尚未开始：`utterance group` 语流组建模与组级 TTS
+
 同时保留一键入口：
 
 - `转写分段`：只跑 source 链路，纠错建议生成后停在人工确认
@@ -91,6 +96,11 @@
 7. 切出 `voices/source-reference-segments/*.wav`
 8. 运行 source review，产出 `jobs/source_correction_review.json`
 
+补充说明：
+
+- `source-reference-segments` 不是原始硬切音频，而是经过外部静音修剪和短淡入淡出处理后的参考音频
+- source 条目内可直接点击 `试听` 播放这份参考音频
+
 这条链路不会自动改正文。
 
 ### Target 链路
@@ -108,6 +118,12 @@
 9. 生成 `subtitles/target.draft.v1.srt`
 10. 生成 `subtitles/target.v1.srt`
 11. 生成 `target/dubbed.v1.mp4`
+
+补充说明：
+
+- target TTS 当前读取的是 `source snapshot text + reference_audio_path`
+- `reference_audio_path` 默认指向 `voices/source-reference-segments/<segment_id>.wav`
+- 时序对齐当前已经不是“逐段硬塞回原段时长”，而是“统一时长放宽 + 边界分类 + 全局停顿预算分配”
 
 ### 一键全流程
 
@@ -180,13 +196,17 @@
 - [source-v1-转写分段设计-2026-03-14.md](/Volumes/8TR0/codex/video_translater/docs/设计文档/source-v1-转写分段设计-2026-03-14.md)
 - [target-v1-翻译合成设计-2026-03-14.md](/Volumes/8TR0/codex/video_translater/docs/设计文档/target-v1-翻译合成设计-2026-03-14.md)
 
+阶段升级设计文档在：
+
+- [target-v2-语流组与全局停顿分配设计-2026-03-14.md](/Volumes/8TR0/codex/video_translater/docs/设计文档/target-v2-语流组与全局停顿分配设计-2026-03-14.md)
+
 ## 当前已知边界
 
 以下问题当前仍属于已知边界，而不是已彻底解决：
 
-1. target 段间仍可能出现轻微边界杂音
-2. 逐段独立翻译会带来少量跨段语义边界不自然
-3. 逐段独立 TTS 容易把参考音频边界特征重复带入段首
-4. 当前主要通过全局时序分配缓解语速问题，但参考音频净化策略还没有重构完
+1. 逐段独立翻译仍会带来少量跨段语义边界不自然
+2. 逐段独立 TTS 仍可能把参考音频边界特征重复带入段首
+3. 当前已通过参考音频淡入淡出显著缓解段间杂音，但这还不是最终的原理级方案
+4. 当前只完成了 V2 的第一阶段；语流组与组级 TTS 仍待实现
 
 也就是说，当前代码已经可用，但 target 音质层面仍有继续优化空间。

@@ -26,6 +26,7 @@ def _segment(index: int, text: str, start: float, end: float) -> Segment:
         end=end,
         text=text,
         audio_path=f"voices/source-segments/seg-{index + 1:04}.wav",
+        reference_audio_path=f"voices/source-reference-segments/seg-{index + 1:04}.wav",
     )
 
 
@@ -75,13 +76,11 @@ def test_plan_target_alignment_windows_keeps_total_and_overlap() -> None:
         total_duration=5.6,
     )
 
-    assert scale == 1.0
+    assert scale > 1.0
     assert windows[-1][1] <= 5.6
     for source_segment, (start, end) in zip(source_segments, windows, strict=True):
         assert end > source_segment.start
         assert start < source_segment.end
-        center = (start + end) / 2.0
-        assert source_segment.start <= center <= source_segment.end
 
 
 def test_plan_target_alignment_windows_uses_global_compression_when_needed() -> None:
@@ -102,6 +101,27 @@ def test_plan_target_alignment_windows_uses_global_compression_when_needed() -> 
     for source_segment, (start, end) in zip(source_segments, windows, strict=True):
         assert end > source_segment.start
         assert start < source_segment.end
+
+
+def test_plan_target_alignment_windows_allocates_more_pause_to_hard_boundaries() -> None:
+    source_segments = [
+        Segment(id="seg-0001", index=0, start=0.2, end=0.9, text="第一句"),
+        Segment(id="seg-0002", index=1, start=0.95, end=1.7, text="第二句。"),
+        Segment(id="seg-0003", index=2, start=2.6, end=3.3, text="第三句"),
+    ]
+
+    windows, scale = _plan_target_alignment_windows(
+        source_segments,
+        [0.52, 0.55, 0.50],
+        total_duration=4.8,
+    )
+
+    first_gap = round(windows[1][0] - windows[0][1], 3)
+    second_gap = round(windows[2][0] - windows[1][1], 3)
+
+    assert scale > 1.0
+    assert first_gap < 0.2
+    assert second_gap > first_gap + 0.1
 
 
 def test_run_full_pipeline_auto_accepts_pending_source_corrections(monkeypatch) -> None:
@@ -159,6 +179,9 @@ def test_run_target_pipeline_builds_draft_aligned_outputs(monkeypatch) -> None:
             audio_path = base_dir / (segment.audio_path or "")
             audio_path.parent.mkdir(parents=True, exist_ok=True)
             audio_path.write_bytes(b"source-segment")
+            reference_audio_path = base_dir / (segment.reference_audio_path or "")
+            reference_audio_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_audio_path.write_bytes(b"reference-segment")
 
         def fake_duration(path: Path) -> float:
             name = Path(path).name
@@ -212,6 +235,10 @@ def test_run_target_pipeline_builds_draft_aligned_outputs(monkeypatch) -> None:
         assert [segment.text for segment in draft_document.segments] == ["EN 第一句。", "EN 第二句。"]
         assert [segment.status for segment in draft_document.segments] == ["ready", "ready"]
         assert all(segment.audio_path and "voices/target-draft/" in segment.audio_path for segment in draft_document.segments)
+        assert [Path(str(call["reference_audio"])).as_posix() for call in synthesizer.calls] == [
+            (base_dir / "voices/source-reference-segments/seg-0001.wav").as_posix(),
+            (base_dir / "voices/source-reference-segments/seg-0002.wav").as_posix(),
+        ]
 
         assert [segment.status for segment in aligned_document.segments] == ["aligned", "aligned"]
         assert all(segment.audio_path and "voices/target-aligned/" in segment.audio_path for segment in aligned_document.segments)
@@ -222,12 +249,12 @@ def test_run_target_pipeline_builds_draft_aligned_outputs(monkeypatch) -> None:
         assert saved_manifest.status == "target_ready"
         assert saved_manifest.translator_provider == "stub-translator"
         assert saved_manifest.synthesizer_provider == "stub-synthesizer"
-        assert synthesizer.calls[0]["reference_audio"] == base_dir / "voices/source-segments/seg-0001.wav"
+        assert synthesizer.calls[0]["reference_audio"] == base_dir / "voices/source-reference-segments/seg-0001.wav"
         assert synthesizer.calls[0]["reference_text"] == "第一句。"
-        assert synthesizer.calls[1]["reference_audio"] == base_dir / "voices/source-segments/seg-0002.wav"
+        assert synthesizer.calls[1]["reference_audio"] == base_dir / "voices/source-reference-segments/seg-0002.wav"
         assert synthesizer.calls[1]["reference_text"] == "第二句。"
         snapshot_payload = source_target_snapshot_file(project_id).read_text(encoding="utf-8")
-        assert "voices/source-segments/seg-0001.wav" in snapshot_payload
+        assert "voices/source-reference-segments/seg-0001.wav" in snapshot_payload
         assert "第一句。" in snapshot_payload
     finally:
         delete_project(project_id)
@@ -291,6 +318,9 @@ def test_run_target_pipeline_resynthesize_reuses_existing_target_text(monkeypatc
             audio_path = base_dir / (segment.audio_path or "")
             audio_path.parent.mkdir(parents=True, exist_ok=True)
             audio_path.write_bytes(b"source-segment")
+            reference_audio_path = base_dir / (segment.reference_audio_path or "")
+            reference_audio_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_audio_path.write_bytes(b"reference-segment")
 
         def fake_duration(path: Path) -> float:
             name = Path(path).name
@@ -374,6 +404,9 @@ def test_run_target_pipeline_normalizes_tts_only_text(monkeypatch) -> None:
             audio_path = base_dir / (segment.audio_path or "")
             audio_path.parent.mkdir(parents=True, exist_ok=True)
             audio_path.write_bytes(b"source-segment")
+            reference_audio_path = base_dir / (segment.reference_audio_path or "")
+            reference_audio_path.parent.mkdir(parents=True, exist_ok=True)
+            reference_audio_path.write_bytes(b"reference-segment")
 
         synthesizer = _StubSynthesizer()
         monkeypatch.setattr("backend.app.pipeline.get_translator", lambda: _NumericTranslator())

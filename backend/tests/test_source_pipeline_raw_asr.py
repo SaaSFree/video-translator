@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from backend.app.models import Segment, TranscriptDocument, TranscriptItem
-from backend.app.pipeline import run_source_pipeline
-from backend.app.storage import create_project, delete_project, load_manifest, load_source_segments, project_paths
+from backend.app.models import Segment, SegmentDocument, TranscriptDocument, TranscriptItem
+from backend.app.pipeline import _materialize_source_segment_audio, run_source_pipeline
+from backend.app.storage import create_project, delete_project, load_manifest, load_source_segments, project_dir, project_paths, save_source_segments
 
 
 class _StubTranscriber:
@@ -167,5 +167,74 @@ def test_run_source_pipeline_repairs_large_source_gap(monkeypatch) -> None:
             "第三句。",
             "第四句。",
         ]
+    finally:
+        delete_project(project_id)
+
+
+def test_materialize_source_segment_audio_sets_processed_reference_audio(monkeypatch, tmp_path: Path) -> None:
+    source_audio = tmp_path / "source.wav"
+    source_audio.write_bytes(b"source-audio")
+    segment = Segment(id="seg-0001", index=0, start=0.5, end=1.7, text="第一句。")
+    calls: list[tuple[str, str, float, float]] = []
+
+    monkeypatch.setattr("backend.app.pipeline.ffprobe_duration", lambda path: 10.0)
+
+    def fake_extract(input_path, output_path, *, start_seconds, duration_seconds, sample_rate):
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(output_path).write_bytes(b"clip")
+        calls.append(("extract", Path(output_path).name, round(start_seconds, 3), round(duration_seconds, 3)))
+
+    monkeypatch.setattr("backend.app.pipeline.extract_audio_clip", fake_extract)
+    monkeypatch.setattr(
+        "backend.app.pipeline.trim_outer_silence",
+        lambda input_path, output_path, **kwargs: Path(output_path).write_bytes(Path(input_path).read_bytes()),
+    )
+    smooth_calls: list[tuple[str, float, float]] = []
+    monkeypatch.setattr(
+        "backend.app.pipeline.smooth_segment_edges",
+        lambda input_path, output_path, *, fade_in, fade_out, **kwargs: (
+            smooth_calls.append((Path(output_path).name, fade_in, fade_out)),
+            Path(output_path).write_bytes(Path(input_path).read_bytes()),
+        )[-1],
+    )
+
+    materialized = _materialize_source_segment_audio(
+        base_dir=tmp_path,
+        source_audio=source_audio,
+        source_segments=[segment],
+    )
+
+    assert materialized[0].audio_path == "voices/source-segments/seg-0001.wav"
+    assert materialized[0].reference_audio_path == "voices/source-reference-segments/seg-0001.wav"
+    assert any(name == "seg-0001.wav" and fade_in == 0.014 and fade_out == 0.022 for name, fade_in, fade_out in smooth_calls)
+
+
+def test_load_source_segments_backfills_reference_audio_path_for_existing_project() -> None:
+    manifest = create_project("reference fallback test")
+    project_id = manifest.id
+    base_dir = project_dir(project_id)
+    try:
+        save_source_segments(
+            project_id,
+            SegmentDocument(
+                segments=[
+                    Segment(
+                        id="seg-0001",
+                        index=0,
+                        start=0.0,
+                        end=1.0,
+                        text="第一句。",
+                        audio_path="voices/source-segments/seg-0001.wav",
+                    )
+                ]
+            ),
+        )
+        reference_path = base_dir / "voices/source-reference-segments/seg-0001.wav"
+        reference_path.parent.mkdir(parents=True, exist_ok=True)
+        reference_path.write_bytes(b"reference")
+
+        loaded = load_source_segments(project_id)
+
+        assert loaded.segments[0].reference_audio_path == "voices/source-reference-segments/seg-0001.wav"
     finally:
         delete_project(project_id)

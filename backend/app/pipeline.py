@@ -328,6 +328,7 @@ def _materialize_source_segment_audio(
         )
         reference_path = reference_dir / f"{segment.id}.wav"
         temp_reference_path = reference_dir / f"{segment.id}.raw.wav"
+        trimmed_reference_path = reference_dir / f"{segment.id}.trimmed.wav"
         clip_start, clip_end = _source_clip_extraction_window(
             source_segments,
             index=index,
@@ -342,14 +343,28 @@ def _materialize_source_segment_audio(
         )
         trim_outer_silence(
             temp_reference_path,
-            reference_path,
+            trimmed_reference_path,
             leading_padding=0.01,
             trailing_padding=0.03,
             min_leading_trim=0.012,
             min_trailing_trim=0.05,
         )
+        smooth_segment_edges(
+            trimmed_reference_path,
+            reference_path,
+            fade_in=0.014,
+            fade_out=0.022,
+        )
         temp_reference_path.unlink(missing_ok=True)
-        materialized.append(segment.model_copy(update={"audio_path": clip_path.relative_to(base_dir).as_posix()}))
+        trimmed_reference_path.unlink(missing_ok=True)
+        materialized.append(
+            segment.model_copy(
+                update={
+                    "audio_path": clip_path.relative_to(base_dir).as_posix(),
+                    "reference_audio_path": reference_path.relative_to(base_dir).as_posix(),
+                }
+            )
+        )
         if save_callback:
             save_callback(materialized + source_segments[index + 1 :])
         if progress_callback:
@@ -459,16 +474,18 @@ def _build_target_reference_document(*, base_dir: Path, source_document: Segment
         reference_text = source_segment.text.strip()
         if not reference_text:
             raise RuntimeError(f"Missing corrected source text for {source_segment.id}.")
-        if not source_segment.audio_path:
+        reference_audio_path = source_segment.reference_audio_path or source_segment.audio_path
+        if not reference_audio_path:
             raise RuntimeError(f"Missing source segment audio for {source_segment.id}.")
-        reference_audio = base_dir / source_segment.audio_path
+        reference_audio = base_dir / reference_audio_path
         if not reference_audio.exists():
             raise RuntimeError(f"Missing source segment audio file for {source_segment.id}: {reference_audio}")
         reference_segments.append(
             source_segment.model_copy(
                 update={
                     "text": reference_text,
-                    "audio_path": source_segment.audio_path,
+                    "audio_path": reference_audio_path,
+                    "reference_audio_path": reference_audio_path,
                     "status": "reference",
                 }
             )
@@ -765,6 +782,138 @@ def _solve_bounded_isotonic_offsets(
     return solved
 
 
+def _terminal_pause_marker(text: str) -> str:
+    value = re.sub(r"[\s\"'”’)\]】》」』]+$", "", str(text or "").strip())
+    return value[-1:] if value else ""
+
+
+def _classify_target_boundary(left_segment: Segment, right_segment: Segment) -> str:
+    source_gap = max(float(right_segment.start) - float(left_segment.end), 0.0)
+    terminal = _terminal_pause_marker(left_segment.text)
+    if terminal in {".", "!", "?", "。", "！", "？", "…"} or source_gap >= 0.58:
+        return "hard_pause"
+    if terminal in {",", ";", ":", "，", "；", "：", "、"} or source_gap >= 0.18:
+        return "soft_pause"
+    return "tight"
+
+
+def _target_gap_slots(
+    source_segments: list[Segment],
+    *,
+    total_duration: float,
+) -> list[dict[str, float | str]]:
+    if not source_segments:
+        return []
+
+    leading_gap = max(float(source_segments[0].start), 0.0)
+    trailing_gap = max(total_duration - float(source_segments[-1].end), 0.0)
+    slots: list[dict[str, float | str]] = [
+        {
+            "kind": "leading",
+            "minimum": 0.0,
+            "preferred": min(max(leading_gap, 0.0), 0.12),
+            "maximum": max(min(max(leading_gap, 0.0), 0.24), 0.08),
+            "preferred_priority": 0.2,
+            "overflow_priority": 0.05,
+        }
+    ]
+
+    for left_segment, right_segment in zip(source_segments, source_segments[1:]):
+        source_gap = max(float(right_segment.start) - float(left_segment.end), 0.0)
+        boundary_kind = _classify_target_boundary(left_segment, right_segment)
+        if boundary_kind == "tight":
+            slots.append(
+                {
+                    "kind": boundary_kind,
+                    "minimum": 0.0,
+                    "preferred": min(max(source_gap, 0.02), 0.08),
+                    "maximum": min(max(source_gap, 0.08), 0.16),
+                    "preferred_priority": 0.15,
+                    "overflow_priority": 0.03,
+                }
+            )
+        elif boundary_kind == "soft_pause":
+            slots.append(
+                {
+                    "kind": boundary_kind,
+                    "minimum": 0.02,
+                    "preferred": min(max(source_gap, 0.10), 0.24),
+                    "maximum": min(max(source_gap, 0.24), 0.42),
+                    "preferred_priority": 1.0,
+                    "overflow_priority": 0.35,
+                }
+            )
+        else:
+            slots.append(
+                {
+                    "kind": boundary_kind,
+                    "minimum": 0.05,
+                    "preferred": min(max(source_gap, 0.22), 0.6),
+                    "maximum": min(max(source_gap, 0.45), 1.2),
+                    "preferred_priority": 1.45,
+                    "overflow_priority": 1.0,
+                }
+            )
+
+    slots.append(
+        {
+            "kind": "trailing",
+            "minimum": 0.0,
+            "preferred": min(max(trailing_gap, 0.0), 0.14),
+            "maximum": max(min(max(trailing_gap, 0.0), 0.28), 0.08),
+            "preferred_priority": 0.2,
+            "overflow_priority": 0.2,
+        }
+    )
+    return slots
+
+
+def _allocate_target_gap_budget(
+    total_gap_budget: float,
+    slots: list[dict[str, float | str]],
+) -> list[float]:
+    if not slots:
+        return []
+    allocated = [float(slot["minimum"]) for slot in slots]
+    remaining = max(float(total_gap_budget) - sum(allocated), 0.0)
+
+    def _fill_to(target_key: str, priority_key: str) -> None:
+        nonlocal remaining
+        for _ in range(8):
+            if remaining <= 1e-6:
+                return
+            weighted_capacities: list[tuple[int, float, float]] = []
+            weighted_total = 0.0
+            for index, slot in enumerate(slots):
+                capacity = max(float(slot[target_key]) - allocated[index], 0.0)
+                priority = max(float(slot[priority_key]), 0.0)
+                weight = capacity * priority
+                if capacity <= 1e-6 or weight <= 1e-6:
+                    continue
+                weighted_capacities.append((index, capacity, weight))
+                weighted_total += weight
+            if not weighted_capacities or weighted_total <= 1e-6:
+                return
+
+            spent = 0.0
+            for index, capacity, weight in weighted_capacities:
+                share = remaining * (weight / weighted_total)
+                delta = min(capacity, share)
+                if delta <= 1e-6:
+                    continue
+                allocated[index] += delta
+                spent += delta
+            if spent <= 1e-6:
+                return
+            remaining = max(remaining - spent, 0.0)
+
+    _fill_to("preferred", "preferred_priority")
+    _fill_to("maximum", "overflow_priority")
+    if remaining > 1e-6:
+        allocated[-1] += remaining
+    return [round(value, 3) for value in allocated]
+
+
 def _plan_target_alignment_windows(
     source_segments: list[Segment],
     draft_durations: list[float],
@@ -772,6 +921,7 @@ def _plan_target_alignment_windows(
     total_duration: float,
     preferred_scale: float = 1.0,
     min_scale: float = 0.35,
+    max_scale: float = 1.15,
     overlap_epsilon: float = 0.04,
 ) -> tuple[list[tuple[float, float]], float]:
     if len(source_segments) != len(draft_durations):
@@ -780,14 +930,17 @@ def _plan_target_alignment_windows(
         return [], preferred_scale
 
     minimum_slot = max(overlap_epsilon * 2.0, 0.12)
+    gap_slots = _target_gap_slots(source_segments, total_duration=total_duration)
 
     def _build(scale: float) -> list[tuple[float, float]] | None:
         slot_durations = [max(float(duration) * scale, minimum_slot) for duration in draft_durations]
         total_slot_duration = sum(slot_durations)
-        if total_slot_duration > total_duration + 1e-6:
+        minimum_gap_budget = sum(float(slot["minimum"]) for slot in gap_slots)
+        if total_slot_duration + minimum_gap_budget > total_duration + 1e-6:
             return None
 
         global_slack = max(total_duration - total_slot_duration, 0.0)
+        allocated_gaps = _allocate_target_gap_budget(global_slack, gap_slots)
         prefix_durations: list[float] = []
         consumed = 0.0
         for slot_duration in slot_durations:
@@ -798,10 +951,13 @@ def _plan_target_alignment_windows(
         upper_offsets: list[float] = []
         preferred_offsets: list[float] = []
         weights: list[float] = []
+        accumulated_gap = allocated_gaps[0] if allocated_gaps else 0.0
         for segment, slot_duration, prefix in zip(source_segments, slot_durations, prefix_durations, strict=True):
             lower_start = max(0.0, float(segment.start) - slot_duration + overlap_epsilon)
             upper_start = min(max(0.0, float(segment.end) - overlap_epsilon), total_duration - slot_duration)
-            preferred_start = ((float(segment.start) + float(segment.end)) / 2.0) - (slot_duration / 2.0)
+            gap_driven_start = prefix + accumulated_gap
+            source_center_start = ((float(segment.start) + float(segment.end)) / 2.0) - (slot_duration / 2.0)
+            preferred_start = (gap_driven_start * 0.72) + (source_center_start * 0.28)
             preferred_start = min(max(preferred_start, lower_start), upper_start)
 
             lower_offset = max(0.0, lower_start - prefix)
@@ -813,6 +969,9 @@ def _plan_target_alignment_windows(
             upper_offsets.append(upper_offset)
             preferred_offsets.append(min(max(preferred_start - prefix, lower_offset), upper_offset))
             weights.append(max(slot_duration, 0.12))
+            next_gap_index = len(preferred_offsets)
+            if next_gap_index < len(allocated_gaps) - 1:
+                accumulated_gap += allocated_gaps[next_gap_index]
 
         try:
             solved_offsets = _solve_bounded_isotonic_offsets(
@@ -837,7 +996,12 @@ def _plan_target_alignment_windows(
             return None
         return planned
 
-    capped_preferred_scale = max(min(float(preferred_scale), 1.0), min_scale)
+    total_draft_duration = max(sum(max(float(duration), minimum_slot) for duration in draft_durations), 0.001)
+    if total_duration >= total_draft_duration:
+        capped_preferred_scale = min(max_scale, max(float(preferred_scale), total_duration / total_draft_duration))
+    else:
+        capped_preferred_scale = min(1.0, max(float(preferred_scale), min_scale))
+    capped_preferred_scale = max(min(capped_preferred_scale, max_scale), min_scale)
     preferred_plan = _build(capped_preferred_scale)
     if preferred_plan is not None:
         return preferred_plan, capped_preferred_scale

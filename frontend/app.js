@@ -53,6 +53,8 @@ const state = {
   currentClipAudio: null,
   currentClipAudioSide: "source",
   renderedModelSettingsKey: null,
+  renderedSourceSegmentsKey: null,
+  renderedTargetSegmentsKey: null,
   isSyncingScroll: false,
   scrollLockHandle: null,
   scrollSyncFrame: null,
@@ -1430,7 +1432,7 @@ function targetEmptyMessage(detail) {
 
 function renderTargetPanel() {
   if (!targetSegments) {
-    return;
+    return false;
   }
   const detail = state.detail;
   const targetRows = displayTargetSegments(detail);
@@ -1476,17 +1478,43 @@ function renderTargetPanel() {
       `.segment-text[data-project-id="${CSS.escape(activeEditor.projectId)}"][data-side="target"][data-segment-id="${CSS.escape(activeEditor.segmentId)}"]`
     )
   ) {
-    return;
+    return false;
   }
   if (!detail) {
-    targetSegments.innerHTML = `<div class="empty-block">${escapeHtml(targetEmptyMessage(detail))}</div>`;
-    return;
+    const renderKey = JSON.stringify({ empty: true, message: targetEmptyMessage(detail) });
+    if (state.renderedTargetSegmentsKey !== renderKey) {
+      targetSegments.innerHTML = `<div class="empty-block">${escapeHtml(targetEmptyMessage(detail))}</div>`;
+      state.renderedTargetSegmentsKey = renderKey;
+      return true;
+    }
+    return false;
   }
   const sourceRows = detail.source_segments?.segments || [];
   if (!sourceRows.length) {
-    targetSegments.innerHTML = `<div class="empty-block">${escapeHtml(targetEmptyMessage(detail))}</div>`;
-    return;
+    const renderKey = JSON.stringify({ empty: true, message: targetEmptyMessage(detail), sourceCount: 0 });
+    if (state.renderedTargetSegmentsKey !== renderKey) {
+      targetSegments.innerHTML = `<div class="empty-block">${escapeHtml(targetEmptyMessage(detail))}</div>`;
+      state.renderedTargetSegmentsKey = renderKey;
+      return true;
+    }
+    return false;
   }
+  const renderKey = JSON.stringify(
+    targetRows.map((segment) => ({
+      id: segment.id,
+      start: segment.start,
+      end: segment.end,
+      text: segment.text,
+      status: segment.status,
+      audio_path: segment.audio_path,
+      placeholder: Boolean(segment.placeholder),
+      source_text: segment.source_text || "",
+    }))
+  );
+  if (state.renderedTargetSegmentsKey === renderKey) {
+    return false;
+  }
+  state.renderedTargetSegmentsKey = renderKey;
   targetSegments.innerHTML = "";
   for (const segment of targetRows) {
     const isPlaceholder = Boolean(segment.placeholder);
@@ -1552,6 +1580,7 @@ function renderTargetPanel() {
     });
     targetSegments.appendChild(segmentRow);
   }
+  return true;
 }
 
 function renderSourceReviewToolbar() {
@@ -1648,22 +1677,60 @@ function renderSegments() {
       `.segment-text[data-project-id="${CSS.escape(activeEditor.projectId)}"][data-segment-id="${CSS.escape(activeEditor.segmentId)}"]`
     )
   ) {
-    return;
+    return false;
   }
-  sourceSegments.innerHTML = "";
   if (!detail) {
-    sourceSegments.innerHTML = '<div class="empty-block">请选择左侧项目，或先导入一个视频。</div>';
-    return;
+    const renderKey = JSON.stringify({ empty: true, message: "请选择左侧项目，或先导入一个视频。" });
+    if (state.renderedSourceSegmentsKey !== renderKey) {
+      sourceSegments.innerHTML = '<div class="empty-block">请选择左侧项目，或先导入一个视频。</div>';
+      state.renderedSourceSegmentsKey = renderKey;
+      return true;
+    }
+    return false;
   }
   const segments = detail.source_segments?.segments || [];
   if (!segments.length) {
-    sourceSegments.innerHTML = '<div class="empty-block">还没有 source 文本。点击“转写分段”开始处理。</div>';
-    return;
+    const renderKey = JSON.stringify({ empty: true, message: "还没有 source 文本。点击“转写分段”开始处理。" });
+    if (state.renderedSourceSegmentsKey !== renderKey) {
+      sourceSegments.innerHTML = '<div class="empty-block">还没有 source 文本。点击“转写分段”开始处理。</div>';
+      state.renderedSourceSegmentsKey = renderKey;
+      return true;
+    }
+    return false;
   }
 
   const reviewVisible = isReviewVisible(state.currentProjectId);
   const suggestionById = reviewSuggestionMap(detail.source_correction_review);
   const projectId = detail.manifest?.id || state.currentProjectId;
+  const renderKey = JSON.stringify({
+    reviewVisible,
+    segments: segments.map((segment) => {
+      const suggestion = suggestionById.get(segment.id);
+      return {
+        id: segment.id,
+        start: segment.start,
+        end: segment.end,
+        text: segment.text,
+        status: segment.status,
+        audio_path: segment.audio_path,
+        reference_audio_path: segment.reference_audio_path,
+        suggestion: suggestion
+          ? {
+              status: suggestion.status,
+              original_text: suggestion.original_text,
+              suggested_text: suggestion.suggested_text,
+              error: suggestion.error || "",
+              changes: suggestion.changes || [],
+            }
+          : null,
+      };
+    }),
+  });
+  if (state.renderedSourceSegmentsKey === renderKey) {
+    return false;
+  }
+  state.renderedSourceSegmentsKey = renderKey;
+  sourceSegments.innerHTML = "";
 
   for (const segment of segments) {
     const suggestion = suggestionById.get(segment.id);
@@ -1681,6 +1748,7 @@ function renderSegments() {
         <div class="segment-status">${escapeHtml(segment.status || "ready")}</div>
         <button type="button" data-segment-action="play" data-segment-id="${escapeHtml(segment.id)}"${segment.audio_path ? "" : " disabled"}>播放</button>
         <button type="button" class="save" data-segment-action="save" data-segment-id="${escapeHtml(segment.id)}"${dirty ? "" : " disabled"}>保存</button>
+        <button type="button" data-segment-action="preview-reference" data-segment-id="${escapeHtml(segment.id)}"${segment.reference_audio_path ? "" : " disabled"}>试听</button>
       </div>
       <textarea class="segment-text" data-project-id="${escapeHtml(projectId)}" data-side="source" data-segment-id="${escapeHtml(segment.id)}">${escapeHtml(textValue)}</textarea>
       ${suggestionHtml}
@@ -1726,26 +1794,32 @@ function renderSegments() {
     });
     sourceSegments.appendChild(segmentRow);
   }
+  return true;
 }
 
 function renderWorkspace() {
   renderSourceLanguageSelect();
   renderSourceControls();
   renderSourceReviewToolbar();
-  renderSegments();
-  renderTargetPanel();
+  const sourceChanged = renderSegments();
+  const targetChanged = renderTargetPanel();
   setSourceVideo(mediaUrl(state.detail?.paths?.source_video, sourceMediaVersion(state.detail)));
   const targetVisualPath = state.detail?.paths?.target_video || state.detail?.paths?.source_video;
   const targetVisualVersion = state.detail?.paths?.target_video ? targetMediaVersion(state.detail) : sourceMediaVersion(state.detail);
   setTargetVideo(mediaUrl(targetVisualPath, targetVisualVersion));
-  restoreSegmentScrollState();
-  window.requestAnimationFrame(() => {
-    syncSegmentRowHeights();
+  if (sourceChanged || targetChanged) {
     restoreSegmentScrollState();
-    restoreActiveEditorState();
-    updateCaptionState("source");
-    updateCaptionState("target");
-  });
+    window.requestAnimationFrame(() => {
+      syncSegmentRowHeights();
+      restoreSegmentScrollState();
+      restoreActiveEditorState();
+      updateCaptionState("source");
+      updateCaptionState("target");
+    });
+    return;
+  }
+  updateCaptionState("source");
+  updateCaptionState("target");
 }
 
 function renderAll() {
@@ -1831,6 +1905,8 @@ async function selectProject(projectId) {
   sourceVideo.pause();
   targetVideo?.pause();
   state.currentProjectId = projectId;
+  state.renderedSourceSegmentsKey = null;
+  state.renderedTargetSegmentsKey = null;
   state.bulkPendingEnabled = false;
   await persistSidebarState({ selected_project_id: projectId });
   await loadCurrentProjectDetail();
@@ -2020,6 +2096,38 @@ function findCurrentTargetSegment(segmentId) {
 
 function findCurrentSuggestion(segmentId) {
   return state.detail?.source_correction_review?.suggestions?.find((item) => item.segment_id === segmentId) || null;
+}
+
+async function playSourceReferenceAudio(segmentId) {
+  const segment = findCurrentSegment(segmentId);
+  if (!segment?.reference_audio_path) {
+    return;
+  }
+  stopCurrentClipAudio();
+  clearSegmentPlayback();
+  state.playbackLeader = null;
+  sourceVideo.pause();
+  targetVideo.pause();
+  syncCaption("source", segment);
+  ensureSegmentVisible("source", segment.id, "smooth");
+  if (subtitleSyncEnabled()) {
+    const peerSegment = matchingSegment("source", segment.id);
+    if (peerSegment) {
+      syncCaption("target", peerSegment);
+      ensureSegmentVisible("target", peerSegment.id);
+    }
+  }
+  const audio = new Audio(mediaUrl(segment.reference_audio_path, sourceMediaVersion(state.detail)));
+  state.currentClipAudio = audio;
+  state.currentClipAudioSide = "source";
+  audio.addEventListener("ended", () => {
+    if (state.currentClipAudio === audio) {
+      state.currentClipAudio = null;
+      state.currentClipAudioSide = "source";
+    }
+  });
+  syncPlaybackSettings();
+  await audio.play();
 }
 
 async function playSegmentAudio(segmentId, side = "source") {
@@ -2539,6 +2647,8 @@ function attachEventHandlers() {
     try {
       if (button.dataset.segmentAction === "play") {
         await playSegmentAudio(segmentId);
+      } else if (button.dataset.segmentAction === "preview-reference") {
+        await playSourceReferenceAudio(segmentId);
       } else if (button.dataset.segmentAction === "jump") {
         jumpToSegment(segmentId);
       } else if (button.dataset.segmentAction === "save") {

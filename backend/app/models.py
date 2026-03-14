@@ -15,6 +15,7 @@ class Segment(BaseModel):
     speaker: str = "speaker_1"
     status: str = "ready"
     audio_path: str | None = None
+    reference_audio_path: str | None = None
 
 
 class TranscriptItem(BaseModel):

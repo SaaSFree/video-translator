@@ -336,9 +336,33 @@ def save_source_segments(document_project_id: str, document: SegmentDocument) ->
     atomic_write_json(source_segments_file(document_project_id), document.model_dump())
 
 
+def _backfill_reference_audio_paths(project_id: str, document: SegmentDocument) -> SegmentDocument:
+    base_dir = project_dir(project_id)
+    changed = False
+    normalized_segments: list[Segment] = []
+    for segment in document.segments:
+        if segment.reference_audio_path:
+            normalized_segments.append(segment)
+            continue
+        fallback_relative = f"voices/source-reference-segments/{segment.id}.wav"
+        fallback_path = base_dir / fallback_relative
+        if fallback_path.exists():
+            normalized_segments.append(segment.model_copy(update={"reference_audio_path": fallback_relative}))
+            changed = True
+            continue
+        normalized_segments.append(segment)
+    if not changed:
+        return document
+    return document.model_copy(update={"segments": normalized_segments})
+
+
 def load_source_segments(project_id: str) -> SegmentDocument:
     payload = read_json(source_segments_file(project_id), {"segments": []})
-    return SegmentDocument.model_validate(payload)
+    document = SegmentDocument.model_validate(payload)
+    normalized = _backfill_reference_audio_paths(project_id, document)
+    if normalized != document:
+        save_source_segments(project_id, normalized)
+    return normalized
 
 
 def save_target_draft_segments(project_id: str, document: SegmentDocument) -> None:
