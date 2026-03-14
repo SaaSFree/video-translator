@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Video Translater</title>
+    <link rel="stylesheet" href="/static/styles.css?v=20260314-1015">
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <section class="panel sidebar-section runtime-panel">
+          <div class="runtime-head settings-head">
+            <h3>模型设置</h3>
+          </div>
+          <div id="model-settings" class="model-settings"></div>
+          <div class="settings-toggle-row">
+            <label class="capsule-toggle" for="subtitle-sync">
+              <span class="capsule-toggle-text">文本同步滚动</span>
+              <input id="subtitle-sync" type="checkbox" checked>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel sidebar-section current-project-panel">
+          <div id="job-status-rail" class="status-rail idle" role="status" aria-live="polite" aria-label="处理状态">
+            <div id="job-progress-fill" class="status-rail-fill" style="width: 0%"></div>
+            <div class="status-rail-content">
+              <div class="status-rail-topline">
+                <span id="job-stage" class="status-stage">空闲（0/0）</span>
+              </div>
+              <strong id="job-message" class="status-message">就绪</strong>
+              <div id="job-step" class="status-detail">等待任务开始</div>
+              <div class="status-rail-meta">
+                <span id="job-stage-progress" class="status-meta">本级 0/0</span>
+                <span id="job-elapsed" class="status-meta">已耗时 --</span>
+                <span id="job-eta" class="status-meta">预计剩余 --</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel sidebar-section project-browser-panel">
+          <div id="project-list" class="project-list"></div>
+          <div class="toolbar project-browser-toolbar">
+            <label class="upload-button">
+              <input id="file-input" type="file" accept="video/mp4">
+              <span>导入视频</span>
+            </label>
+            <button id="start-full-process" class="primary-action sidebar-process">转写合成</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <section class="video-grid">
+          <article class="panel player-panel">
+            <video id="source-video" preload="metadata"></video>
+            <div class="controls">
+              <button data-player="source" data-action="play">播放</button>
+              <button data-player="source" data-action="pause">暂停</button>
+              <button data-player="source" data-action="stop">停止</button>
+              <button data-player="source" data-action="replay">重放</button>
+              <select data-player="source" class="speed-select">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+              <label class="volume-control">
+                <span>音量</span>
+                <input id="source-volume" data-player="source" class="volume-slider" type="range" min="0" max="100" value="100">
+              </label>
+              <label class="language-control">
+                <span>语言</span>
+                <span class="select-shell">
+                  <select id="source-language" aria-label="原视频语言"></select>
+                </span>
+              </label>
+              <button id="start-source-process" class="primary-action process-trigger">转写分段</button>
+            </div>
+            <div id="source-segments" class="segment-list"></div>
+          </article>
+          <article class="panel player-panel target-panel">
+            <video id="target-video" preload="metadata"></video>
+            <div class="controls target-controls">
+              <button data-player="target" data-action="play">播放</button>
+              <button data-player="target" data-action="pause">暂停</button>
+              <button data-player="target" data-action="stop">停止</button>
+              <button data-player="target" data-action="replay">重放</button>
+              <select data-player="target" class="speed-select">
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1" selected>1x</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="2">2x</option>
+              </select>
+              <label class="volume-control">
+                <span>音量</span>
+                <input id="target-volume" data-player="target" class="volume-slider" type="range" min="0" max="100" value="100">
+              </label>
+              <label class="language-control">
+                <span>语言</span>
+                <span class="select-shell">
+                  <select id="target-language" aria-label="目标语言"></select>
+                </span>
+              </label>
+              <button id="start-target-process" class="primary-action process-trigger">翻译合成</button>
+            </div>
+            <div id="target-segments" class="segment-list"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div id="project-context-menu" class="context-menu" hidden>
+      <button type="button" data-context-action="stop">停止任务</button>
+      <button type="button" data-context-action="export">导出项目</button>
+      <button type="button" data-context-action="show-review">显示纠错</button>
+      <button type="button" data-context-action="hide-review">隐藏纠错</button>
+      <button type="button" data-context-action="clip">截取片段</button>
+      <button type="button" data-context-action="clear">清空项目</button>
+      <button type="button" data-context-action="delete" class="danger">删除项目</button>
+    </div>
+
+    <div id="text-context-menu" class="context-menu" hidden>
+      <button type="button" data-text-action="select-all">全选</button>
+      <button type="button" data-text-action="copy">复制</button>
+    </div>
+
+    <dialog id="clip-dialog" class="clip-dialog">
+      <form id="clip-form" class="clip-form" method="dialog">
+        <div class="clip-form-head">
+          <h3>截取片段</h3>
+          <p>时间格式：分:秒.毫秒，例如 03:00.000</p>
+        </div>
+        <label class="clip-field">
+          <span>开始时间</span>
+          <input id="clip-start" type="text" value="00:00.000" inputmode="decimal">
+        </label>
+        <label class="clip-field">
+          <span>结束时间</span>
+          <input id="clip-end" type="text" value="03:00.000" inputmode="decimal">
+        </label>
+        <div id="clip-progress" class="clip-progress" hidden>
+          <div class="clip-progress-head">
+            <strong id="clip-progress-stage">等待开始</strong>
+            <span id="clip-progress-percent">0%</span>
+          </div>
+          <div class="clip-progress-track" aria-hidden="true">
+            <div id="clip-progress-fill" class="clip-progress-fill" style="width: 0%"></div>
+          </div>
+          <p id="clip-progress-detail" class="clip-progress-detail">尚未开始截取。</p>
+        </div>
+        <p id="clip-error" class="clip-error" hidden></p>
+        <div class="clip-actions">
+          <button type="button" id="clip-cancel">取消</button>
+          <button type="submit" id="clip-submit" class="primary-action">确认</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/static/app.js?v=20260314-1015" defer></script>
+  </body>
+</html>

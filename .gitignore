@@ -1,0 +1,34 @@
+.DS_Store
+
+# Codex app local state
+.codex_chat_state.json
+.codex_chat_state.json.pre_restore
+.codex_chat_uploads/
+.codex_chat_usage.json
+.codex_chat_usage_cursor.json
+
+# Local tooling state
+.playwright-cli/
+.pytest_cache/
+.vscode/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local runtime and generated assets
+projects/
+output/
+tmp/
+regression-workdir/
+$tmpdir/
+voices/
+
+# Local service logs and pid files
+*.log
+*.pid
+
+# External dependencies and model weights
+third_party/
+

@@ -1,0 +1,7 @@
+{
+  "requested_url": "https://www.youtube.com/watch?v=4RLI4kQFDck&t=410s",
+  "status": "download_pending",
+  "reason": "Outbound network/DNS access is blocked in the current execution environment, so the file could not be fetched automatically here.",
+  "target_path": "assets/defaults/default_test_video.mp4",
+  "created_at": "2026-03-08"
+}
