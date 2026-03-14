@@ -71,6 +71,10 @@ def target_aligned_segments_file(project_id: str) -> Path:
     return project_dir(project_id) / "segments" / "target.aligned.v1.json"
 
 
+def target_group_plan_file(project_id: str) -> Path:
+    return project_dir(project_id) / "segments" / "target.group-plan.v1.json"
+
+
 def source_target_snapshot_file(project_id: str) -> Path:
     return project_dir(project_id) / "segments" / "source.snapshot.for-target.v1.json"
 
@@ -85,6 +89,7 @@ def project_paths(project_id: str) -> dict[str, Path]:
         "target_srt": base / "subtitles" / "target.v1.srt",
         "target_track": base / "voices" / "target-track.v1.wav",
         "target_video": base / "target" / "dubbed.v1.mp4",
+        "target_group_plan": base / "segments" / "target.group-plan.v1.json",
     }
 
 
@@ -406,12 +411,17 @@ def save_source_target_snapshot(project_id: str, document: SegmentDocument) -> N
     atomic_write_json(source_target_snapshot_file(project_id), document.model_dump())
 
 
+def save_target_group_plan(project_id: str, payload: dict[str, object]) -> None:
+    atomic_write_json(target_group_plan_file(project_id), payload)
+
+
 def clear_target_outputs(project_id: str) -> None:
     base_dir = project_dir(project_id)
     paths = project_paths(project_id)
     save_target_draft_segments(project_id, SegmentDocument())
     save_target_aligned_segments(project_id, SegmentDocument())
     source_target_snapshot_file(project_id).unlink(missing_ok=True)
+    target_group_plan_file(project_id).unlink(missing_ok=True)
     paths["target_draft_srt"].unlink(missing_ok=True)
     paths["target_srt"].unlink(missing_ok=True)
     paths["target_track"].unlink(missing_ok=True)

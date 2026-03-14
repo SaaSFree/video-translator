@@ -12,10 +12,12 @@
 6. 全局时序对齐
 7. 生成 target 音轨与 `dubbed.v1.mp4`
 
-其中 `target` 侧当前已经进入 V2 的第一阶段：
+其中 `target` 侧当前已经进入 V2 的第二阶段早期实现：
 
 - 已落地：边界分类、全局停顿预算分配、统一语速放宽
-- 尚未开始：`utterance group` 语流组建模与组级 TTS
+- 已落地：`utterance group` 语流组规划与 `target.group-plan.v1.json`
+- 已落地：同组共享参考锚点，避免连续语流中音色反复重启
+- 尚未开始：组级 TTS
 
 同时保留一键入口：
 
@@ -123,7 +125,9 @@
 
 - target TTS 当前读取的是 `source snapshot text + reference_audio_path`
 - `reference_audio_path` 默认指向 `voices/source-reference-segments/<segment_id>.wav`
+- 若多个 target 段属于同一 `utterance group`，当前会自动复用同一个组内参考锚点
 - 时序对齐当前已经不是“逐段硬塞回原段时长”，而是“统一时长放宽 + 边界分类 + 全局停顿预算分配”
+- 当前还会额外生成 `segments/target.group-plan.v1.json`，记录语流组与组间停顿预算
 
 ### 一键全流程
 
@@ -150,6 +154,7 @@
 - `segments/source.snapshot.for-target.v1.json`
 - `segments/target.draft.v1.json`
 - `segments/target.aligned.v1.json`
+- `segments/target.group-plan.v1.json`
 - `subtitles/source.v1.srt`
 - `subtitles/target.draft.v1.srt`
 - `subtitles/target.v1.srt`
@@ -205,8 +210,8 @@
 以下问题当前仍属于已知边界，而不是已彻底解决：
 
 1. 逐段独立翻译仍会带来少量跨段语义边界不自然
-2. 逐段独立 TTS 仍可能把参考音频边界特征重复带入段首
+2. 虽然同组共享参考锚点已经缓解音色跳变，但逐段独立 TTS 仍可能把参考音频边界特征重复带入段首
 3. 当前已通过参考音频淡入淡出显著缓解段间杂音，但这还不是最终的原理级方案
-4. 当前只完成了 V2 的第一阶段；语流组与组级 TTS 仍待实现
+4. 当前已经进入语流组规划阶段，但组级 TTS 仍待实现
 
 也就是说，当前代码已经可用，但 target 音质层面仍有继续优化空间。
